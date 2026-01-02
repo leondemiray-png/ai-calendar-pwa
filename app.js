@@ -1,4 +1,3 @@
-// ---------- tiny “database” ----------
 const KEY = "ai_calendar_mvp_v1";
 
 function loadState() {
@@ -25,12 +24,11 @@ function addChat(role, text) {
 }
 
 function parseChoreCommand(text) {
-  // format: "chore: clip nails / 10m / every 14d"
   const raw = text.trim();
   if (!raw.toLowerCase().startsWith("chore:")) return null;
 
   const parts = raw.slice(6).split("/").map(s => s.trim()).filter(Boolean);
-  if (parts.length < 3) return { error: "Format must be: chore: name / 10m / every 14d" };
+  if (parts.length < 3) return { error: "Format: chore: name / 10m / every 14d" };
 
   const name = parts[0];
   const minutesMatch = parts[1].match(/(\d+)\s*m/i);
@@ -42,7 +40,7 @@ function parseChoreCommand(text) {
   const intervalDays = Number(everyMatch[1]);
 
   if (!name || !Number.isFinite(minutes) || !Number.isFinite(intervalDays)) {
-    return { error: "Couldn’t read the name/minutes/days." };
+    return { error: "Couldn’t read name/minutes/days." };
   }
   if (minutes <= 0 || intervalDays <= 0) {
     return { error: "Minutes and days must be > 0." };
@@ -55,7 +53,7 @@ function createChore({ name, minutes, intervalDays }) {
   const state = loadState();
   const now = new Date();
 
-  // First due date is intervalDays from now (you can change this later if you want “due today”)
+  // first due date is intervalDays from now
   const nextDue = new Date(now);
   nextDue.setDate(nextDue.getDate() + intervalDays);
 
@@ -79,7 +77,7 @@ function markChoreDone(choreId) {
   const now = new Date();
   chore.lastCompletedISO = now.toISOString();
 
-  // repeat AFTER completion:
+  // repeat AFTER completion
   const next = new Date(now);
   next.setDate(next.getDate() + chore.intervalDays);
   chore.nextDueISO = next.toISOString();
@@ -92,7 +90,6 @@ function choresDueToday(state) {
   return state.chores.filter(c => new Date(c.nextDueISO) <= today);
 }
 
-// ---------- UI ----------
 function render() {
   const state = loadState();
 
@@ -106,7 +103,7 @@ function render() {
     chatEl.appendChild(div);
   }
 
-  // today checkboxes
+  // today
   const todayEl = document.getElementById("today");
   todayEl.innerHTML = "";
 
@@ -164,16 +161,9 @@ function handleSend() {
   render();
 }
 
-// service worker (offline-ish)
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js");
-}
-
-// events
 document.getElementById("send").addEventListener("click", handleSend);
 document.getElementById("msg").addEventListener("keydown", (e) => {
   if (e.key === "Enter") handleSend();
 });
 
-// initial
 render();
