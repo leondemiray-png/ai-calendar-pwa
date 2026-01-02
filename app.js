@@ -1,52 +1,98 @@
-const KEY = "ai_calendar_mvp_v1";
+const KEY = "ai_calendar_mvp_v2";
 
 function loadState() {
   return JSON.parse(localStorage.getItem(KEY) || JSON.stringify({
     chat: [],
-    chores: [] // { id, name, minutes, intervalDays, nextDueISO, lastCompletedISO }
+    chores: []
   }));
 }
-
-function saveState(state) {
-  localStorage.setItem(KEY, JSON.stringify(state));
-}
+function saveState(state) { localStorage.setItem(KEY, JSON.stringify(state)); }
 
 function startOfToday() {
   const d = new Date();
   d.setHours(0,0,0,0);
   return d;
 }
-
 function addChat(role, text) {
   const state = loadState();
   state.chat.push({ role, text, ts: Date.now() });
   saveState(state);
 }
 
-function parseChoreCommand(text) {
-  const raw = text.trim();
-  if (!raw.toLowerCase().startsWith("chore:")) return null;
+// --- Helpers ---
+function parseMinutes(str) {
+  const m = str.match(/(\d+)\s*(m|min|mins|minute|minutes)\b/i);
+  return m ? Number(m[1]) : null;
+}
+function parseEveryDays(str) {
+  // every 4d, every 4 days, every 2 weeks
+  let m = str.match(/every\s*(\d+)\s*(d|day|days)\b/i);
+  if (m) return Number(m[1]);
 
-  const parts = raw.slice(6).split("/").map(s => s.trim()).filter(Boolean);
-  if (parts.length < 3) return { error: "Format: chore: name / 10m / every 14d" };
+  m = str.match(/every\s*(\d+)\s*(w|week|weeks)\b/i);
+  if (m) return Number(m[1]) * 7;
 
-  const name = parts[0];
-  const minutesMatch = parts[1].match(/(\d+)\s*m/i);
-  const everyMatch = parts[2].match(/every\s*(\d+)\s*d/i);
+  // also allow "each 14 days" or "in 14 days"
+  m = str.match(/\b(\d+)\s*(d|day|days)\b/i);
+  if (m && /every|each|repeat/i.test(str)) return Number(m[1]);
 
-  if (!minutesMatch || !everyMatch) return { error: "Use minutes like 10m and interval like every 14d" };
+  m = str.match(/\b(\d+)\s*(w|week|weeks)\b/i);
+  if (m && /every|each|repeat/i.test(str)) return Number(m[1]) * 7;
 
-  const minutes = Number(minutesMatch[1]);
-  const intervalDays = Number(everyMatch[1]);
+  return null;
+}
 
-  if (!name || !Number.isFinite(minutes) || !Number.isFinite(intervalDays)) {
-    return { error: "Couldn’t read name/minutes/days." };
+function normalizeInput(raw) {
+  return raw.trim().replace(/\s+/g, " ");
+}
+
+// --- Main parser (more “AI-like”) ---
+function parseChoreLike(text) {
+  const raw = normalizeInput(text);
+
+  // Accept both with and without "chore:"
+  let s = raw;
+  if (/^chore:/i.test(s)) s = s.slice(6).trim();
+
+  // Pattern 1: "name / 10m / every 14d" (with or without chore:)
+  if (s.includes("/")) {
+    const parts = s.split("/").map(x => x.trim()).filter(Boolean);
+
+    // name / 10m / every 14d
+    const name = parts[0] || "";
+    const minutes = parseMinutes(parts.join(" "));
+    const intervalDays = parseEveryDays(parts.join(" "));
+
+    if (!name) return { error: "I need a name. Example: water plant / 3m / every 4d" };
+    if (!minutes) return { error: "Add a time like 3m or 10m." };
+    if (!intervalDays) return { error: "Add an interval like every 4d or every 2 weeks." };
+
+    return { name, minutes, intervalDays };
   }
-  if (minutes <= 0 || intervalDays <= 0) {
-    return { error: "Minutes and days must be > 0." };
+
+  // Pattern 2: Natural language:
+  // "Water the plant every 14 days"
+  // "clip nails every 2 weeks 10m"
+  const minutes = parseMinutes(s) ?? 5; // default 5 min if you didn't specify
+  const intervalDays = parseEveryDays(s);
+
+  // If user wrote something like "Water the plant every 14 days" -> intervalDays exists
+  if (intervalDays) {
+    // Remove the time/interval words from the name to keep it clean
+    let name = s
+      .replace(/every\s*\d+\s*(d|day|days|w|week|weeks)\b/ig, "")
+      .replace(/\b\d+\s*(m|min|mins|minute|minutes)\b/ig, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // If name became empty, fallback
+    if (!name) name = "Unnamed chore";
+
+    return { name, minutes, intervalDays };
   }
 
-  return { name, minutes, intervalDays };
+  // Not a chore
+  return null;
 }
 
 function createChore({ name, minutes, intervalDays }) {
@@ -77,7 +123,6 @@ function markChoreDone(choreId) {
   const now = new Date();
   chore.lastCompletedISO = now.toISOString();
 
-  // repeat AFTER completion
   const next = new Date(now);
   next.setDate(next.getDate() + chore.intervalDays);
   chore.nextDueISO = next.toISOString();
@@ -93,7 +138,6 @@ function choresDueToday(state) {
 function render() {
   const state = loadState();
 
-  // chat
   const chatEl = document.getElementById("chat");
   chatEl.innerHTML = "";
   for (const m of state.chat.slice(-30)) {
@@ -103,7 +147,6 @@ function render() {
     chatEl.appendChild(div);
   }
 
-  // today
   const todayEl = document.getElementById("today");
   todayEl.innerHTML = "";
 
@@ -132,7 +175,7 @@ function render() {
     });
 
     const text = document.createElement("div");
-    text.innerHTML = `<strong>${c.name}</strong> <span class="muted">(${c.minutes} min)</span>`;
+    text.innerHTML = `<strong>${c.name}</strong> <span class="muted">(${c.minutes} min · every ${c.intervalDays}d)</span>`;
 
     row.appendChild(cb);
     row.appendChild(text);
@@ -147,14 +190,17 @@ function handleSend() {
 
   addChat("me", text);
 
-  const parsed = parseChoreCommand(text);
+  const parsed = parseChoreLike(text);
+
   if (!parsed) {
-    addChat("sys", `Right now I only support chores.\nTry: chore: water plant / 3m / every 4d`);
+    addChat("sys",
+      `I can add chores if you mention an interval.\nExamples:\n- water plant / 3m / every 4d\n- Water the plant every 14 days\n- clip nails every 2 weeks 10m`
+    );
   } else if (parsed.error) {
     addChat("sys", `❌ ${parsed.error}`);
   } else {
     createChore(parsed);
-    addChat("sys", `Added chore: "${parsed.name}" every ${parsed.intervalDays} days (${parsed.minutes} min).`);
+    addChat("sys", `Added: "${parsed.name}" (about ${parsed.minutes} min) every ${parsed.intervalDays} days.`);
   }
 
   input.value = "";
